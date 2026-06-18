@@ -29,20 +29,32 @@ jobs:
         run: |
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
 
-      # 核心推演解法：不伤及无辜，只定点清除引发死循环的过时 Thin Binary 脚本阶段
-      - name: Fix Xcode Build Cycle (Remove Obsolete Script)
+      # 终极修复：清除死循环脚本，并修复原作者遗留的 Bundle ID 名字不匹配 Bug
+      - name: Fix Xcode Build Cycle & Bundle ID Mismatch
         run: |
           gem install xcodeproj
-          ruby -e "
-          require 'xcodeproj'
-          project = Xcodeproj::Project.open('ios/Runner.xcodeproj')
-          runner = project.targets.find { |t| t.name == 'Runner' }
+          ruby -e '
+          require "xcodeproj"
+          project = Xcodeproj::Project.open("ios/Runner.xcodeproj")
+          runner = project.targets.find { |t| t.name == "Runner" }
+          ext = project.targets.find { |t| t.name == "ShareExtension" }
+          
+          # 1. 修复原作者的 Bug：强制同步 Bundle ID
+          if runner && ext
+            runner_config = runner.build_configurations.find { |c| c.name == "Release" }
+            runner_id = runner_config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] || "com.mystyle.purelive.liu"
+            
+            ext.build_configurations.each do |c|
+              c.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] = "#{runner_id}.ShareExtension"
+            end
+          end
+          
+          # 2. 修复死循环：删除过时的 Thin Binary 脚本
           if runner
-            # 寻找并彻底删除名字叫 Thin Binary 的过时壳脚本
-            runner.build_phases.delete_if { |phase| phase.isa == 'PBXShellScriptBuildPhase' && phase.name == 'Thin Binary' }
+            runner.build_phases.delete_if { |phase| phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary" }
           end
           project.save
-          "
+          '
 
       - name: Install iOS Pods
         run: |
