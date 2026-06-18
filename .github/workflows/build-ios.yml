@@ -1,4 +1,4 @@
-name: Build iOS Unsigned IPA (Stable Release)
+name: Build iOS Unsigned IPA (Master Final Fix)
 
 on:
   workflow_dispatch: 
@@ -8,19 +8,21 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Fetch Original Code (Time Machine)
+      - name: Fetch Original Code
         uses: actions/checkout@v4
         with:
+          # 我们回到最新版，因为老版本的第三方依赖已经损坏
           repository: liuchuancong/pure_live
-          # 🌟 终极时光机：不再拉取充满 Bug 的最新代码
-          # 我们回退到一个月前发布的最稳定的 2.0.21 版本！
-          # 这个版本完美兼容你的 iOS 14.3，不需要任何魔改和手术！
-          ref: v2.0.21 
+          ref: master
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+
+      # 1. 禁用 SPM，避开 Firebase 强制 iOS 15 的报错
+      - name: Disable Swift Package Manager
+        run: flutter config --no-enable-swift-package-manager
 
       - name: Install Flutter dependencies
         run: |
@@ -28,15 +30,97 @@ jobs:
           mkdir -p build/macos/SourcePackages
           flutter pub get
 
+      - name: Patch Vision Pro Bug in Plugin
+        run: |
+          find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
+
+      # 2. 终极超级手术：修复所有报错和 iOS 14.3 闪退
+      - name: Comprehensive iOS Fixes
+        run: |
+          gem install xcodeproj
+          ruby -e '
+          require "xcodeproj"
+          
+          # A. 修改 Podfile，强制降级部署版本
+          podfile_path = "ios/Podfile"
+          if File.exist?(podfile_path)
+            content = File.read(podfile_path)
+            macro = "flutter_additional_ios_build_settings(target)"
+            if content.include?(macro)
+              patch = "flutter_additional_ios_build_settings(target)\n      target.build_configurations.each do |c|\n        c.build_settings[\"IPHONEOS_DEPLOYMENT_TARGET\"] = \"13.0\"\n        c.build_settings[\"ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES\"] = \"YES\"\n        c.build_settings[\"ENABLE_BITCODE\"] = \"NO\"\n      end"
+              content.gsub!(macro, patch)
+              File.write(podfile_path, content)
+            end
+          end
+          
+          project = Xcodeproj::Project.open("ios/Runner.xcodeproj")
+          runner = project.targets.find { |t| t.name == "Runner" }
+          
+          # B. 直接彻底删除那个一直作妖且我们根本用不到的 ShareExtension 扩展
+          ext = project.targets.find { |t| t.name == "ShareExtension" }
+          ext.remove_from_project if ext
+          
+          if runner
+            # C. 删除死循环和资源复制阶段（解决 Xcode 15/16 构建死循环）
+            runner.build_phases.delete_if do |phase|
+               # 删掉那个过时的老脚本
+               is_thin = (phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary")
+               # 删掉拷贝扩展的动作
+               is_copy_ext = false
+               if phase.isa == "PBXCopyFilesBuildPhase"
+                 phase.files.each do |f|
+                   path = f.file_ref&.path || f.file_ref&.name || ""
+                   is_copy_ext = true if path.end_with?(".appex")
+                 end
+               end
+               is_thin || is_copy_ext
+            end
+            
+            # D. 【关键新补丁】暴力切除导致打包失败的“寻找隐私清单”动作！
+            runner.build_phases.delete_if do |phase|
+               is_privacy = false
+               if phase.isa == "PBXResourcesBuildPhase"
+                 phase.files.each do |f|
+                   path = f.file_ref&.path || f.file_ref&.name || ""
+                   # 只要遇到那些找不见的 privacy.bundle，直接从编译清单里划掉！
+                   is_privacy = true if path.include?("_privacy.bundle")
+                 end
+               end
+               is_privacy
+            end
+          end
+          
+          # E. 遍历注入 iOS 14.3 免死金牌
+          project.targets.each do |target|
+            target.build_configurations.each do |config|
+              config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
+              config.build_settings["ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES"] = "YES"
+              config.build_settings["ENABLE_BITCODE"] = "NO"
+              
+              if target.name == "Runner"
+                ldflags = config.build_settings["OTHER_LDFLAGS"] || ["$(inherited)"]
+                ldflags = [ldflags] if ldflags.is_a?(String)
+                
+                ldflags << "-weak_framework" << "AVFAudio" << "-weak_framework" << "CoreMIDI" << "-weak_framework" << "UniformTypeIdentifiers"
+                ldflags << "-Wl,-weak-lswift_Concurrency" << "-Wl,-weak-lswift_StringProcessing" << "-Wl,-weak-lswift_RegexParser"
+                
+                config.build_settings["OTHER_LDFLAGS"] = ldflags.uniq
+              end
+            end
+          end
+          project.save
+          '
+
       - name: Install iOS Pods
         run: |
           cd ios
+          # 我们把之前被改掉的扩展从依赖锁里也清掉
+          sed -i '' '/target .ShareExtension. do/,/end/d' Podfile
           pod install --repo-update
           cd ..
 
       - name: Build unsigned iOS app
-        # 这里加上 --obfuscate 是为了避免老版本的一些特定混淆报错
-        run: flutter build ios --release --no-codesign --obfuscate --split-debug-info=./debug_info
+        run: flutter build ios --release --no-codesign
 
       - name: Package into .ipa
         run: |
