@@ -11,7 +11,6 @@ jobs:
       - name: Fetch Original Code
         uses: actions/checkout@v4
         with:
-          # 我们回到最新版，因为老版本的第三方依赖已经损坏
           repository: liuchuancong/pure_live
           ref: master
 
@@ -20,7 +19,7 @@ jobs:
         with:
           channel: 'stable'
 
-      # 1. 禁用 SPM，避开 Firebase 强制 iOS 15 的报错
+      # 1. 关闭 SPM，退回 CocoaPods，完美避开 Firebase 强制要求 iOS 15 的死锁
       - name: Disable Swift Package Manager
         run: flutter config --no-enable-swift-package-manager
 
@@ -34,20 +33,20 @@ jobs:
         run: |
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
 
-      # 2. 终极超级手术：修复所有报错和 iOS 14.3 闪退
-      - name: Comprehensive iOS Fixes
+      # 2. 终极柔性缝合手术：不硬删任何模块，全部通过安全接口修改
+      - name: Comprehensive iOS 14 Compatibility & Build Fixes
         run: |
           gem install xcodeproj
-          ruby -e '
+          ruby <<-'EOF'
           require "xcodeproj"
           
-          # A. 修改 Podfile，强制降级部署版本
+          # A. 修改 Podfile，统一最低部署版本
           podfile_path = "ios/Podfile"
           if File.exist?(podfile_path)
             content = File.read(podfile_path)
             macro = "flutter_additional_ios_build_settings(target)"
             if content.include?(macro)
-              patch = "flutter_additional_ios_build_settings(target)\n      target.build_configurations.each do |c|\n        c.build_settings[\"IPHONEOS_DEPLOYMENT_TARGET\"] = \"13.0\"\n        c.build_settings[\"ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES\"] = \"YES\"\n        c.build_settings[\"ENABLE_BITCODE\"] = \"NO\"\n      end"
+              patch = "flutter_additional_ios_build_settings(target)\n      target.build_configurations.each do |c|\n        c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'\n      end"
               content.gsub!(macro, patch)
               File.write(podfile_path, content)
             end
@@ -55,42 +54,32 @@ jobs:
           
           project = Xcodeproj::Project.open("ios/Runner.xcodeproj")
           runner = project.targets.find { |t| t.name == "Runner" }
-          
-          # B. 直接彻底删除那个一直作妖且我们根本用不到的 ShareExtension 扩展
           ext = project.targets.find { |t| t.name == "ShareExtension" }
-          ext.remove_from_project if ext
           
-          if runner
-            # C. 删除死循环和资源复制阶段（解决 Xcode 15/16 构建死循环）
-            runner.build_phases.delete_if do |phase|
-               # 删掉那个过时的老脚本
-               is_thin = (phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary")
-               # 删掉拷贝扩展的动作
-               is_copy_ext = false
-               if phase.isa == "PBXCopyFilesBuildPhase"
-                 phase.files.each do |f|
-                   path = f.file_ref&.path || f.file_ref&.name || ""
-                   is_copy_ext = true if path.end_with?(".appex")
-                 end
-               end
-               is_thin || is_copy_ext
-            end
-            
-            # D. 【关键新补丁】暴力切除导致打包失败的“寻找隐私清单”动作！
-            runner.build_phases.delete_if do |phase|
-               is_privacy = false
-               if phase.isa == "PBXResourcesBuildPhase"
-                 phase.files.each do |f|
-                   path = f.file_ref&.path || f.file_ref&.name || ""
-                   # 只要遇到那些找不见的 privacy.bundle，直接从编译清单里划掉！
-                   is_privacy = true if path.include?("_privacy.bundle")
-                 end
-               end
-               is_privacy
+          # B. 绝对不删 ShareExtension，而是把它的包名强制同步（解决包名不匹配报错）
+          if runner && ext
+            runner_config = runner.build_configurations.find { |c| c.name == "Release" }
+            runner_id = runner_config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] || "com.mystyle.purelive.liu"
+            ext.build_configurations.each do |c|
+              c.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] = "#{runner_id}.ShareExtension"
             end
           end
           
-          # E. 遍历注入 iOS 14.3 免死金牌
+          if runner
+            # C. 解决构建死循环：安全删除 Thin Binary 脚本阶段
+            runner.build_phases.delete_if { |phase| phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary" }
+            
+            # D. 解决隐私文件丢失：安全扫描资源打包阶段，剔除找不到的 _privacy.bundle
+            resources_phase = runner.build_phases.find { |phase| phase.isa == "PBXResourcesBuildPhase" }
+            if resources_phase
+              resources_phase.files.delete_if do |f|
+                path = f.file_ref&.path || f.file_ref&.name || ""
+                path.include?("_privacy.bundle")
+              end
+            end
+          end
+          
+          # E. 全局注入 iOS 14.3 弱链接保护，防止安装后闪退
           project.targets.each do |target|
             target.build_configurations.each do |config|
               config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
@@ -101,21 +90,27 @@ jobs:
                 ldflags = config.build_settings["OTHER_LDFLAGS"] || ["$(inherited)"]
                 ldflags = [ldflags] if ldflags.is_a?(String)
                 
-                ldflags << "-weak_framework" << "AVFAudio" << "-weak_framework" << "CoreMIDI" << "-weak_framework" << "UniformTypeIdentifiers"
-                ldflags << "-Wl,-weak-lswift_Concurrency" << "-Wl,-weak-lswift_StringProcessing" << "-Wl,-weak-lswift_RegexParser"
+                # 针对 iOS 14 缺失的新框架
+                ["AVFAudio", "CoreMIDI", "UniformTypeIdentifiers"].each do |fw|
+                  ldflags << "-weak_framework" << fw unless ldflags.include?(fw)
+                end
+                
+                # 针对 iOS 14 缺失的 Swift 底层库
+                ["-Wl,-weak-lswift_Concurrency", "-Wl,-weak-lswift_StringProcessing", "-Wl,-weak-lswift_RegexParser"].each do |lib|
+                  ldflags << lib unless ldflags.include?(lib)
+                end
                 
                 config.build_settings["OTHER_LDFLAGS"] = ldflags.uniq
               end
             end
           end
+          
           project.save
-          '
+          EOF
 
       - name: Install iOS Pods
         run: |
           cd ios
-          # 我们把之前被改掉的扩展从依赖锁里也清掉
-          sed -i '' '/target .ShareExtension. do/,/end/d' Podfile
           pod install --repo-update
           cd ..
 
