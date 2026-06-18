@@ -1,4 +1,4 @@
-name: Build iOS Unsigned IPA (Master Final Fix)
+name: Build iOS Unsigned IPA (Precision Target Fix)
 
 on:
   workflow_dispatch: 
@@ -19,7 +19,6 @@ jobs:
         with:
           channel: 'stable'
 
-      # 1. 关闭 SPM，退回 CocoaPods，完美避开 Firebase 强制要求 iOS 15 的死锁
       - name: Disable Swift Package Manager
         run: flutter config --no-enable-swift-package-manager
 
@@ -33,20 +32,29 @@ jobs:
         run: |
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
 
-      # 2. 终极柔性缝合手术：不硬删任何模块，全部通过安全接口修改
-      - name: Comprehensive iOS 14 Compatibility & Build Fixes
+      # 终极精准打击：全局降级，但对 file_picker 等刺头插件单独提级
+      - name: Precision iOS Target Patch
         run: |
           gem install xcodeproj
           ruby <<-'EOF'
           require "xcodeproj"
           
-          # A. 修改 Podfile，统一最低部署版本
+          # 1. 修复全局 Podfile 宏（大部分插件依然降级到 13.0 保障老手机兼容）
           podfile_path = "ios/Podfile"
           if File.exist?(podfile_path)
             content = File.read(podfile_path)
             macro = "flutter_additional_ios_build_settings(target)"
             if content.include?(macro)
-              patch = "flutter_additional_ios_build_settings(target)\n      target.build_configurations.each do |c|\n        c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'\n      end"
+              # 我们在这个宏的末尾，加上对特殊插件的精准“提级”判定
+              patch = "flutter_additional_ios_build_settings(target)\n" \
+                      "      target.build_configurations.each do |c|\n" \
+                      "        c.build_settings['ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES'] = 'YES'\n" \
+                      "        if target.name == 'file_picker' || target.name.include?('firebase') || target.name.include?('cloud_firestore')\n" \
+                      "           c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'\n" \
+                      "        else\n" \
+                      "           c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'\n" \
+                      "        end\n" \
+                      "      end"
               content.gsub!(macro, patch)
               File.write(podfile_path, content)
             end
@@ -56,7 +64,7 @@ jobs:
           runner = project.targets.find { |t| t.name == "Runner" }
           ext = project.targets.find { |t| t.name == "ShareExtension" }
           
-          # B. 绝对不删 ShareExtension，而是把它的包名强制同步（解决包名不匹配报错）
+          # 2. 依然同步 Bundle ID 避免包名报错
           if runner && ext
             runner_config = runner.build_configurations.find { |c| c.name == "Release" }
             runner_id = runner_config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] || "com.mystyle.purelive.liu"
@@ -66,10 +74,10 @@ jobs:
           end
           
           if runner
-            # C. 解决构建死循环：安全删除 Thin Binary 脚本阶段
+            # 3. 删除死循环构建脚本
             runner.build_phases.delete_if { |phase| phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary" }
             
-            # D. 解决隐私文件丢失：安全扫描资源打包阶段，剔除找不到的 _privacy.bundle
+            # 4. 删除丢失的隐私清单文件
             resources_phase = runner.build_phases.find { |phase| phase.isa == "PBXResourcesBuildPhase" }
             if resources_phase
               resources_phase.files.delete_if do |f|
@@ -79,23 +87,20 @@ jobs:
             end
           end
           
-          # E. 全局注入 iOS 14.3 弱链接保护，防止安装后闪退
+          # 5. 主工程降级，并全局注入弱链接，保障 App 在 14.3 安装后不闪退
           project.targets.each do |target|
             target.build_configurations.each do |config|
               config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
-              config.build_settings["ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES"] = "YES"
               config.build_settings["ENABLE_BITCODE"] = "NO"
               
               if target.name == "Runner"
                 ldflags = config.build_settings["OTHER_LDFLAGS"] || ["$(inherited)"]
                 ldflags = [ldflags] if ldflags.is_a?(String)
                 
-                # 针对 iOS 14 缺失的新框架
                 ["AVFAudio", "CoreMIDI", "UniformTypeIdentifiers"].each do |fw|
                   ldflags << "-weak_framework" << fw unless ldflags.include?(fw)
                 end
                 
-                # 针对 iOS 14 缺失的 Swift 底层库
                 ["-Wl,-weak-lswift_Concurrency", "-Wl,-weak-lswift_StringProcessing", "-Wl,-weak-lswift_RegexParser"].each do |lib|
                   ldflags << lib unless ldflags.include?(lib)
                 end
