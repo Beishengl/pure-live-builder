@@ -8,12 +8,11 @@ jobs:
     runs-on: macos-latest
 
     steps:
-
       - name: Fetch Original Code
         uses: actions/checkout@v4
         with:
-          repository: liuchuancong/pure_live 
-          ref: master 
+          repository: liuchuancong/pure_live
+          ref: master
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -26,10 +25,40 @@ jobs:
           mkdir -p build/macos/SourcePackages
           flutter pub get
 
-      # 完美替身手术：修复 Vision Pro 导致的报错
       - name: Patch Vision Pro Bug in Plugin
         run: |
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
+
+      # 终极手术：彻底切除导致编译死循环、且会导致侧载安装失败的分享扩展
+      - name: Remove ShareExtension (Fix Xcode Cycle)
+        run: |
+          gem install xcodeproj
+          ruby -e "
+          require 'xcodeproj'
+          project = Xcodeproj::Project.open('ios/Runner.xcodeproj')
+          # 删掉扩展模块
+          ext = project.targets.find { |t| t.name == 'ShareExtension' }
+          ext.remove_from_project if ext
+          # 删掉主程序里试图去复制这个扩展的步骤
+          runner = project.targets.find { |t| t.name == 'Runner' }
+          if runner
+            runner.build_phases.delete_if do |phase|
+              is_ext = false
+              if phase.isa == 'PBXCopyFilesBuildPhase'
+                phase.files.each do |f|
+                  path = f.file_ref&.path || f.file_ref&.name || ''
+                  is_ext = true if path.end_with?('.appex')
+                end
+              end
+              is_ext
+            end
+          end
+          project.save
+          "
+          # 如果依赖配置里有它，也一并删掉防报错
+          if grep -q "target 'ShareExtension'" ios/Podfile; then
+            sed -i '' '/target .ShareExtension. do/,/end/d' ios/Podfile
+          fi
 
       - name: Install iOS Pods
         run: |
