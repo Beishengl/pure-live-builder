@@ -29,8 +29,8 @@ jobs:
         run: |
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
 
-      # 终极修复：清除死循环脚本，并修复原作者遗留的 Bundle ID 名字不匹配 Bug
-      - name: Fix Xcode Build Cycle & Bundle ID Mismatch
+      # 终极修复全家桶：清死循环 + 修复 Bundle ID + 解决 iOS 14.3 的 AVFAudio 闪退
+      - name: Fix Xcode Build Cycle, Bundle ID & iOS 14.3 Crash
         run: |
           gem install xcodeproj
           ruby -e '
@@ -39,19 +39,24 @@ jobs:
           runner = project.targets.find { |t| t.name == "Runner" }
           ext = project.targets.find { |t| t.name == "ShareExtension" }
           
-          # 1. 修复原作者的 Bug：强制同步 Bundle ID
           if runner && ext
             runner_config = runner.build_configurations.find { |c| c.name == "Release" }
             runner_id = runner_config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] || "com.mystyle.purelive.liu"
-            
             ext.build_configurations.each do |c|
               c.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] = "#{runner_id}.ShareExtension"
             end
           end
           
-          # 2. 修复死循环：删除过时的 Thin Binary 脚本
           if runner
             runner.build_phases.delete_if { |phase| phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary" }
+            
+            # 【全新增加】解决 iOS 14.3 缺少 AVFAudio 的秒退问题，强制弱链接！
+            runner.build_configurations.each do |config|
+              ldflags = config.build_settings["OTHER_LDFLAGS"] || ["$(inherited)"]
+              ldflags = [ldflags] if ldflags.is_a?(String)
+              ldflags << "-weak_framework" << "AVFAudio"
+              config.build_settings["OTHER_LDFLAGS"] = ldflags.uniq
+            end
           end
           project.save
           '
