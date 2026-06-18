@@ -1,4 +1,4 @@
-name: Build iOS Unsigned IPA (Cloud Fetch)
+name: Build iOS Unsigned IPA (Stable Release)
 
 on:
   workflow_dispatch: 
@@ -8,89 +8,25 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Fetch Original Code
+      - name: Fetch Original Code (Time Machine)
         uses: actions/checkout@v4
         with:
           repository: liuchuancong/pure_live
-          ref: master
+          # 🌟 终极时光机：不再拉取充满 Bug 的最新代码
+          # 我们回退到一个月前发布的最稳定的 2.0.21 版本！
+          # 这个版本完美兼容你的 iOS 14.3，不需要任何魔改和手术！
+          ref: v2.0.21 
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
 
-      # 🌟 终极绝杀：强行关闭苹果严格的 Swift Package Manager，退回宽容的老式依赖管理！
-      - name: Disable Swift Package Manager
-        run: flutter config --no-enable-swift-package-manager
-
       - name: Install Flutter dependencies
         run: |
           mkdir -p build/ios/SourcePackages
           mkdir -p build/macos/SourcePackages
           flutter pub get
-
-      - name: Patch Vision Pro Bug in Plugin
-        run: |
-          find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
-
-      # 依然保留针对你的 iOS 14.3 的全量弱链接兼容补丁
-      - name: Comprehensive iOS 14 Backwards Compatibility Patch
-        run: |
-          gem install xcodeproj
-          ruby -e '
-          require "xcodeproj"
-          
-          podfile_path = "ios/Podfile"
-          if File.exist?(podfile_path)
-            content = File.read(podfile_path)
-            macro = "flutter_additional_ios_build_settings(target)"
-            if content.include?(macro)
-              patch = "flutter_additional_ios_build_settings(target)\n      target.build_configurations.each do |c|\n        c.build_settings[\"IPHONEOS_DEPLOYMENT_TARGET\"] = \"13.0\"\n        c.build_settings[\"ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES\"] = \"YES\"\n        c.build_settings[\"ENABLE_BITCODE\"] = \"NO\"\n      end"
-              content.gsub!(macro, patch)
-              File.write(podfile_path, content)
-            end
-          end
-          
-          project = Xcodeproj::Project.open("ios/Runner.xcodeproj")
-          runner = project.targets.find { |t| t.name == "Runner" }
-          ext = project.targets.find { |t| t.name == "ShareExtension" }
-          
-          if runner && ext
-            runner_config = runner.build_configurations.find { |c| c.name == "Release" }
-            runner_id = runner_config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] || "com.mystyle.purelive.liu"
-            ext.build_configurations.each do |c|
-              c.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] = "#{runner_id}.ShareExtension"
-            end
-          end
-          
-          if runner
-            runner.build_phases.delete_if { |phase| phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary" }
-          end
-          
-          project.targets.each do |target|
-            target.build_configurations.each do |config|
-              config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
-              config.build_settings["ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES"] = "YES"
-              config.build_settings["ENABLE_BITCODE"] = "NO"
-              
-              rpaths = config.build_settings["LD_RUNPATH_SEARCH_PATHS"] || ["$(inherited)"]
-              rpaths = [rpaths] if rpaths.is_a?(String)
-              rpaths << "@executable_path/Frameworks" << "@loader_path/Frameworks"
-              config.build_settings["LD_RUNPATH_SEARCH_PATHS"] = rpaths.uniq
-              
-              if target.name == "Runner"
-                ldflags = config.build_settings["OTHER_LDFLAGS"] || ["$(inherited)"]
-                ldflags = [ldflags] if ldflags.is_a?(String)
-                
-                ldflags << "-weak_framework" << "AVFAudio" << "-weak_framework" << "CoreMIDI" << "-weak_framework" << "UniformTypeIdentifiers"
-                ldflags << "-Wl,-weak-lswift_Concurrency" << "-Wl,-weak-lswift_StringProcessing" << "-Wl,-weak-lswift_RegexParser"
-                
-                config.build_settings["OTHER_LDFLAGS"] = ldflags.uniq
-              end
-            end
-          end
-          project.save
-          '
 
       - name: Install iOS Pods
         run: |
@@ -99,7 +35,8 @@ jobs:
           cd ..
 
       - name: Build unsigned iOS app
-        run: flutter build ios --release --no-codesign
+        # 这里加上 --obfuscate 是为了避免老版本的一些特定混淆报错
+        run: flutter build ios --release --no-codesign --obfuscate --split-debug-info=./debug_info
 
       - name: Package into .ipa
         run: |
