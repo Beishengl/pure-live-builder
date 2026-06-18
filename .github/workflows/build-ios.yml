@@ -1,4 +1,4 @@
-name: Build iOS Unsigned IPA (Auto-Pilot Mode)
+name: Build iOS Unsigned IPA (No Timeout)
 
 on:
   workflow_dispatch: 
@@ -30,10 +30,10 @@ jobs:
 
       - name: Patch Plugin Source Codes
         run: |
-          # 修复 Vision Pro 报错
+          # 1. 修复 Vision Pro 报错
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
           
-          # 强制在 better_player_plus 中注入 Swift 模块翻译器
+          # 2. 强制在 better_player_plus 的 ObjC 头文件中注入 Swift 模块翻译器！
           find ~/.pub-cache/hosted/pub.dev/better_player_plus* -name "BetterPlayerPlugin.h" -type f -exec sh -c 'echo "\n#if __has_include(<better_player_plus/better_player_plus-Swift.h>)\n#import <better_player_plus/better_player_plus-Swift.h>\n#endif" >> "$1"' _ {} \;
 
       - name: Install iOS Pods
@@ -125,13 +125,9 @@ jobs:
           pods_proj.save
           EOF
 
-      # 🌟【全新自动化看门狗】你只需要触发，剩下的交给它自己重试！
-      - name: Build unsigned iOS app (With Auto-Retry)
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 25
-          max_attempts: 3
-          command: flutter build ios --release --no-codesign
+      # 🌟 彻底去除了第三方重试插件和时间限制，恢复为最纯净的官方编译命令
+      - name: Build unsigned iOS app
+        run: flutter build ios --release --no-codesign
 
       - name: Package into .ipa
         run: |
