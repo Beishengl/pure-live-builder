@@ -1,4 +1,4 @@
-name: Build iOS Unsigned IPA (Precision Target Fix)
+name: Build iOS Unsigned IPA (Ultimate Privacy Fix)
 
 on:
   workflow_dispatch: 
@@ -19,6 +19,7 @@ jobs:
         with:
           channel: 'stable'
 
+      # 1. 禁用 SPM，避开 Firebase 强制 iOS 15 的报错
       - name: Disable Swift Package Manager
         run: flutter config --no-enable-swift-package-manager
 
@@ -28,24 +29,30 @@ jobs:
           mkdir -p build/macos/SourcePackages
           flutter pub get
 
+      # 🌟【全新核弹级补丁】物理清洗：在 CocoaPods 运行前，直接从所有下载的插件库中抹除“隐私清单”的定义！
+      # 这样 CocoaPods 根本就不会去生成那些导致报错的 _privacy.bundle 目标！
+      - name: Nuke Privacy Manifests (Fix CocoaPods Bundle Bug)
+        run: |
+          find ~/.pub-cache/hosted/pub.dev -name "*.podspec" -type f -exec sed -i '' '/_privacy/d' {} +
+          find ~/.pub-cache/hosted/pub.dev -name "*.podspec" -type f -exec sed -i '' '/PrivacyInfo.xcprivacy/d' {} +
+
       - name: Patch Vision Pro Bug in Plugin
         run: |
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
 
-      # 终极精准打击：全局降级，但对 file_picker 等刺头插件单独提级
+      # 2. 依然保持我们引以为傲的“精准提级”和“iOS 14.3 弱链接全家桶”
       - name: Precision iOS Target Patch
         run: |
           gem install xcodeproj
           ruby <<-'EOF'
           require "xcodeproj"
           
-          # 1. 修复全局 Podfile 宏（大部分插件依然降级到 13.0 保障老手机兼容）
+          # A. 全局降级 13.0，针对刺头插件单独提级 15.0
           podfile_path = "ios/Podfile"
           if File.exist?(podfile_path)
             content = File.read(podfile_path)
             macro = "flutter_additional_ios_build_settings(target)"
             if content.include?(macro)
-              # 我们在这个宏的末尾，加上对特殊插件的精准“提级”判定
               patch = "flutter_additional_ios_build_settings(target)\n" \
                       "      target.build_configurations.each do |c|\n" \
                       "        c.build_settings['ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES'] = 'YES'\n" \
@@ -64,7 +71,7 @@ jobs:
           runner = project.targets.find { |t| t.name == "Runner" }
           ext = project.targets.find { |t| t.name == "ShareExtension" }
           
-          # 2. 依然同步 Bundle ID 避免包名报错
+          # B. 同步 Bundle ID
           if runner && ext
             runner_config = runner.build_configurations.find { |c| c.name == "Release" }
             runner_id = runner_config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] || "com.mystyle.purelive.liu"
@@ -74,10 +81,9 @@ jobs:
           end
           
           if runner
-            # 3. 删除死循环构建脚本
+            # C. 删掉死循环脚本
             runner.build_phases.delete_if { |phase| phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary" }
-            
-            # 4. 删除丢失的隐私清单文件
+            # D. 清理主工程可能遗留的隐私文件引用
             resources_phase = runner.build_phases.find { |phase| phase.isa == "PBXResourcesBuildPhase" }
             if resources_phase
               resources_phase.files.delete_if do |f|
@@ -87,7 +93,7 @@ jobs:
             end
           end
           
-          # 5. 主工程降级，并全局注入弱链接，保障 App 在 14.3 安装后不闪退
+          # E. 全局注入 iOS 14 老系统护航补丁
           project.targets.each do |target|
             target.build_configurations.each do |config|
               config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
@@ -96,15 +102,8 @@ jobs:
               if target.name == "Runner"
                 ldflags = config.build_settings["OTHER_LDFLAGS"] || ["$(inherited)"]
                 ldflags = [ldflags] if ldflags.is_a?(String)
-                
-                ["AVFAudio", "CoreMIDI", "UniformTypeIdentifiers"].each do |fw|
-                  ldflags << "-weak_framework" << fw unless ldflags.include?(fw)
-                end
-                
-                ["-Wl,-weak-lswift_Concurrency", "-Wl,-weak-lswift_StringProcessing", "-Wl,-weak-lswift_RegexParser"].each do |lib|
-                  ldflags << lib unless ldflags.include?(lib)
-                end
-                
+                ["AVFAudio", "CoreMIDI", "UniformTypeIdentifiers"].each { |fw| ldflags << "-weak_framework" << fw unless ldflags.include?(fw) }
+                ["-Wl,-weak-lswift_Concurrency", "-Wl,-weak-lswift_StringProcessing", "-Wl,-weak-lswift_RegexParser"].each { |lib| ldflags << lib unless ldflags.include?(lib) }
                 config.build_settings["OTHER_LDFLAGS"] = ldflags.uniq
               end
             end
