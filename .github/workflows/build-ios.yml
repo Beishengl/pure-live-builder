@@ -19,6 +19,10 @@ jobs:
         with:
           channel: 'stable'
 
+      # 🌟 终极绝杀：强行关闭苹果严格的 Swift Package Manager，退回宽容的老式依赖管理！
+      - name: Disable Swift Package Manager
+        run: flutter config --no-enable-swift-package-manager
+
       - name: Install Flutter dependencies
         run: |
           mkdir -p build/ios/SourcePackages
@@ -29,14 +33,13 @@ jobs:
         run: |
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
 
-      # 终极防御手术：一枪封死所有可能导致 iOS 14 闪退的环境缺陷
+      # 依然保留针对你的 iOS 14.3 的全量弱链接兼容补丁
       - name: Comprehensive iOS 14 Backwards Compatibility Patch
         run: |
           gem install xcodeproj
           ruby -e '
           require "xcodeproj"
           
-          # 1. 改造 Podfile：强行统一所有第三方插件的最低运行版本和动态库嵌入设置
           podfile_path = "ios/Podfile"
           if File.exist?(podfile_path)
             content = File.read(podfile_path)
@@ -48,12 +51,10 @@ jobs:
             end
           end
           
-          # 2. 改造 Xcode 主工程配置
           project = Xcodeproj::Project.open("ios/Runner.xcodeproj")
           runner = project.targets.find { |t| t.name == "Runner" }
           ext = project.targets.find { |t| t.name == "ShareExtension" }
           
-          # A. 修复原项目 Bundle ID 错位缺陷
           if runner && ext
             runner_config = runner.build_configurations.find { |c| c.name == "Release" }
             runner_id = runner_config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] || "com.mystyle.purelive.liu"
@@ -62,38 +63,27 @@ jobs:
             end
           end
           
-          # B. 移除死循环构建脚本
           if runner
             runner.build_phases.delete_if { |phase| phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary" }
           end
           
-          # C. 遍历所有工程组件，注入终极免死设置
           project.targets.each do |target|
             target.build_configurations.each do |config|
               config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
               config.build_settings["ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES"] = "YES"
               config.build_settings["ENABLE_BITCODE"] = "NO"
               
-              # 补全 RPATH 路径确保 dyld 运行时能顺利找到自带的补丁库
               rpaths = config.build_settings["LD_RUNPATH_SEARCH_PATHS"] || ["$(inherited)"]
               rpaths = [rpaths] if rpaths.is_a?(String)
               rpaths << "@executable_path/Frameworks" << "@loader_path/Frameworks"
               config.build_settings["LD_RUNPATH_SEARCH_PATHS"] = rpaths.uniq
               
-              # 专门为主程序注入底层链接器参数（将新系统才有的库声明为弱链接，防止启动时被击杀）
               if target.name == "Runner"
                 ldflags = config.build_settings["OTHER_LDFLAGS"] || ["$(inherited)"]
                 ldflags = [ldflags] if ldflags.is_a?(String)
                 
-                # 弱链接拆分/新增的 Framework
-                ldflags << "-weak_framework" << "AVFAudio"
-                ldflags << "-weak_framework" << "CoreMIDI"
-                ldflags << "-weak_framework" << "UniformTypeIdentifiers"
-                
-                # 弱链接 Swift 现代高级库（全面封锁 Concurrency/String/Regex 等秒退源）
-                ldflags << "-Wl,-weak-lswift_Concurrency"
-                ldflags << "-Wl,-weak-lswift_StringProcessing"
-                ldflags << "-Wl,-weak-lswift_RegexParser"
+                ldflags << "-weak_framework" << "AVFAudio" << "-weak_framework" << "CoreMIDI" << "-weak_framework" << "UniformTypeIdentifiers"
+                ldflags << "-Wl,-weak-lswift_Concurrency" << "-Wl,-weak-lswift_StringProcessing" << "-Wl,-weak-lswift_RegexParser"
                 
                 config.build_settings["OTHER_LDFLAGS"] = ldflags.uniq
               end
