@@ -1,4 +1,4 @@
-name: Build iOS Unsigned IPA (No Timeout)
+name: Build iOS Unsigned IPA (iOS 14.0 Pure)
 
 on:
   workflow_dispatch: 
@@ -30,10 +30,7 @@ jobs:
 
       - name: Patch Plugin Source Codes
         run: |
-          # 1. 修复 Vision Pro 报错
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
-          
-          # 2. 强制在 better_player_plus 的 ObjC 头文件中注入 Swift 模块翻译器！
           find ~/.pub-cache/hosted/pub.dev/better_player_plus* -name "BetterPlayerPlugin.h" -type f -exec sh -c 'echo "\n#if __has_include(<better_player_plus/better_player_plus-Swift.h>)\n#import <better_player_plus/better_player_plus-Swift.h>\n#endif" >> "$1"' _ {} \;
 
       - name: Install iOS Pods
@@ -44,11 +41,9 @@ jobs:
 
       - name: Post-Pod Surgery (Nuke Privacy Targets & Fix iOS 14)
         run: |
-          # 1. 暴力清洗隐私脚本
           find ios/Pods -name "*.sh" -type f -exec sed -i '' -E '/privacy\.bundle/Id' {} +
           find ios/Pods -name "*.sh" -type f -exec sed -i '' -E '/PrivacyInfo\.xcprivacy/Id' {} +
 
-          # 2. 工程级劫持手术
           gem install xcodeproj
           ruby <<-'EOF'
           require "xcodeproj"
@@ -72,14 +67,14 @@ jobs:
 
           proj.targets.each do |target|
             target.build_configurations.each do |config|
-              config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
+              # 🌟 统一将主程序降级到 14.0
+              config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "14.0"
               config.build_settings["ENABLE_BITCODE"] = "NO"
               
               if target.name == "Runner"
                 ldflags = config.build_settings["OTHER_LDFLAGS"] || ["$(inherited)"]
                 ldflags = [ldflags] if ldflags.is_a?(String)
                 
-                # 仅保留极其关键的弱链接
                 ldflags << "-weak_framework" << "AVFAudio" unless ldflags.include?("AVFAudio")
                 ["-Wl,-weak-lswift_Concurrency", "-Wl,-weak-lswift_StringProcessing", "-Wl,-weak-lswift_RegexParser"].each { |lib| ldflags << lib unless ldflags.include?(lib) }
                 config.build_settings["OTHER_LDFLAGS"] = ldflags.uniq
@@ -95,11 +90,8 @@ jobs:
 
           pods_proj.targets.each do |t|
             t.build_configurations.each do |c|
-              if t.name.include?("file_picker") || t.name.include?("firebase") || t.name.include?("cloud_firestore")
-                c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "15.0"
-              else
-                c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
-              end
+              # 🌟 统一将所有插件（包括刺头插件）降级到 14.0，不再拔高到 15.0！
+              c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "14.0"
               
               if t.name.include?("better_player_plus")
                 c.build_settings["DEFINES_MODULE"] = "YES"
@@ -125,7 +117,6 @@ jobs:
           pods_proj.save
           EOF
 
-      # 🌟 彻底去除了第三方重试插件和时间限制，恢复为最纯净的官方编译命令
       - name: Build unsigned iOS app
         run: flutter build ios --release --no-codesign
 
