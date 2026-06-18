@@ -29,19 +29,18 @@ jobs:
         run: |
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
 
-      # 终极手术：彻底切除导致编译死循环、且会导致侧载安装失败的分享扩展
-      - name: Remove ShareExtension (Fix Xcode Cycle)
+      # 终极微创手术：不删除扩展模块，仅仅切断主程序对它的依赖和复制动作
+      - name: Disconnect ShareExtension (Fix Xcode Cycle)
         run: |
           gem install xcodeproj
           ruby -e "
           require 'xcodeproj'
           project = Xcodeproj::Project.open('ios/Runner.xcodeproj')
-          # 删掉扩展模块
-          ext = project.targets.find { |t| t.name == 'ShareExtension' }
-          ext.remove_from_project if ext
-          # 删掉主程序里试图去复制这个扩展的步骤
           runner = project.targets.find { |t| t.name == 'Runner' }
           if runner
+            # 1. 剪断依赖连线
+            runner.dependencies.delete_if { |dep| dep.target && dep.target.name == 'ShareExtension' }
+            # 2. 剪断打包拷贝连线
             runner.build_phases.delete_if do |phase|
               is_ext = false
               if phase.isa == 'PBXCopyFilesBuildPhase'
@@ -55,10 +54,6 @@ jobs:
           end
           project.save
           "
-          # 如果依赖配置里有它，也一并删掉防报错
-          if grep -q "target 'ShareExtension'" ios/Podfile; then
-            sed -i '' '/target .ShareExtension. do/,/end/d' ios/Podfile
-          fi
 
       - name: Install iOS Pods
         run: |
