@@ -1,4 +1,4 @@
-name: Build iOS Unsigned IPA (Ultimate Privacy Fix)
+name: Build iOS Unsigned IPA (The Final Stand)
 
 on:
   workflow_dispatch: 
@@ -19,7 +19,6 @@ jobs:
         with:
           channel: 'stable'
 
-      # 1. 禁用 SPM，避开 Firebase 强制 iOS 15 的报错
       - name: Disable Swift Package Manager
         run: flutter config --no-enable-swift-package-manager
 
@@ -29,72 +28,50 @@ jobs:
           mkdir -p build/macos/SourcePackages
           flutter pub get
 
-      # 🌟【全新核弹级补丁】物理清洗：在 CocoaPods 运行前，直接从所有下载的插件库中抹除“隐私清单”的定义！
-      # 这样 CocoaPods 根本就不会去生成那些导致报错的 _privacy.bundle 目标！
-      - name: Nuke Privacy Manifests (Fix CocoaPods Bundle Bug)
-        run: |
-          find ~/.pub-cache/hosted/pub.dev -name "*.podspec" -type f -exec sed -i '' '/_privacy/d' {} +
-          find ~/.pub-cache/hosted/pub.dev -name "*.podspec" -type f -exec sed -i '' '/PrivacyInfo.xcprivacy/d' {} +
-
       - name: Patch Vision Pro Bug in Plugin
         run: |
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
 
-      # 2. 依然保持我们引以为傲的“精准提级”和“iOS 14.3 弱链接全家桶”
-      - name: Precision iOS Target Patch
+      # 先让 CocoaPods 正常运行，生成它以为的完整工程
+      - name: Install iOS Pods
         run: |
+          cd ios
+          pod install --repo-update
+          cd ..
+
+      # 🌟 终极上帝视角手术：在 Xcode 编译前，直接劫持并重写所有工程配置文件！
+      - name: Post-Pod Surgery (Nuke Privacy Targets & Fix iOS 14)
+        run: |
+          # 1. 暴力清洗：把 CocoaPods 生成的资源复制脚本里，所有关于 privacy 的行全部删掉
+          find ios/Pods -name "*.sh" -type f -exec sed -i '' -E '/privacy\.bundle/Id' {} +
+          find ios/Pods -name "*.sh" -type f -exec sed -i '' -E '/PrivacyInfo\.xcprivacy/Id' {} +
+
+          # 2. 工程级劫持手术
           gem install xcodeproj
           ruby <<-'EOF'
           require "xcodeproj"
-          
-          # A. 全局降级 13.0，针对刺头插件单独提级 15.0
-          podfile_path = "ios/Podfile"
-          if File.exist?(podfile_path)
-            content = File.read(podfile_path)
-            macro = "flutter_additional_ios_build_settings(target)"
-            if content.include?(macro)
-              patch = "flutter_additional_ios_build_settings(target)\n" \
-                      "      target.build_configurations.each do |c|\n" \
-                      "        c.build_settings['ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES'] = 'YES'\n" \
-                      "        if target.name == 'file_picker' || target.name.include?('firebase') || target.name.include?('cloud_firestore')\n" \
-                      "           c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'\n" \
-                      "        else\n" \
-                      "           c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'\n" \
-                      "        end\n" \
-                      "      end"
-              content.gsub!(macro, patch)
-              File.write(podfile_path, content)
-            end
-          end
-          
-          project = Xcodeproj::Project.open("ios/Runner.xcodeproj")
-          runner = project.targets.find { |t| t.name == "Runner" }
-          ext = project.targets.find { |t| t.name == "ShareExtension" }
-          
-          # B. 同步 Bundle ID
+
+          # ==========================================
+          # 第一部分：修复主工程 (Runner.xcodeproj)
+          # ==========================================
+          proj = Xcodeproj::Project.open("ios/Runner.xcodeproj")
+          runner = proj.targets.find { |t| t.name == "Runner" }
+          ext = proj.targets.find { |t| t.name == "ShareExtension" }
+
+          # A. 同步扩展包名，避免签名不匹配
           if runner && ext
             runner_config = runner.build_configurations.find { |c| c.name == "Release" }
             runner_id = runner_config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] || "com.mystyle.purelive.liu"
-            ext.build_configurations.each do |c|
-              c.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] = "#{runner_id}.ShareExtension"
-            end
+            ext.build_configurations.each { |c| c.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] = "#{runner_id}.ShareExtension" }
           end
-          
+
           if runner
-            # C. 删掉死循环脚本
+            # B. 删掉死循环的老旧脚本
             runner.build_phases.delete_if { |phase| phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary" }
-            # D. 清理主工程可能遗留的隐私文件引用
-            resources_phase = runner.build_phases.find { |phase| phase.isa == "PBXResourcesBuildPhase" }
-            if resources_phase
-              resources_phase.files.delete_if do |f|
-                path = f.file_ref&.path || f.file_ref&.name || ""
-                path.include?("_privacy.bundle")
-              end
-            end
           end
-          
-          # E. 全局注入 iOS 14 老系统护航补丁
-          project.targets.each do |target|
+
+          # C. 注入 iOS 14.3 全套弱链接免死金牌
+          proj.targets.each do |target|
             target.build_configurations.each do |config|
               config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
               config.build_settings["ENABLE_BITCODE"] = "NO"
@@ -108,15 +85,44 @@ jobs:
               end
             end
           end
-          
-          project.save
-          EOF
+          proj.save
 
-      - name: Install iOS Pods
-        run: |
-          cd ios
-          pod install --repo-update
-          cd ..
+          # ==========================================
+          # 第二部分：爆破插件工程 (Pods.xcodeproj)
+          # ==========================================
+          pods_proj = Xcodeproj::Project.open("ios/Pods/Pods.xcodeproj")
+
+          # A. 精准提级：把要求严格的插件提到 15.0，其他降级 13.0
+          pods_proj.targets.each do |t|
+            t.build_configurations.each do |c|
+              if t.name.include?("file_picker") || t.name.include?("firebase") || t.name.include?("cloud_firestore")
+                c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "15.0"
+              else
+                c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
+              end
+            end
+          end
+
+          # B. 核心绝杀：查找所有以 privacy 结尾的编译目标，从工程中物理抹除！
+          privacy_targets = pods_proj.targets.select { |t| t.name.downcase.include?("privacy") }
+          privacy_targets.each do |pt|
+            # 先切断所有其他插件对它的依赖
+            pods_proj.targets.each { |t| t.dependencies.delete_if { |dep| dep.target == pt } }
+            # 再把它从世界抹除
+            pt.remove_from_project
+          end
+
+          # C. 安全清理：确保没有任何残留的文件引用指向 privacy.bundle
+          pods_proj.targets.each do |t|
+            t.build_phases.each do |phase|
+              phase.files.delete_if do |f|
+                path = f.file_ref&.path || f.file_ref&.name || ""
+                path.downcase.include?("privacy.bundle") || path.downcase.include?("privacyinfo")
+              end
+            end
+          end
+          pods_proj.save
+          EOF
 
       - name: Build unsigned iOS app
         run: flutter build ios --release --no-codesign
