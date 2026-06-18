@@ -29,8 +29,8 @@ jobs:
         run: |
           find ~/.pub-cache/hosted/pub.dev/device_info_plus* \( -name "*.m" -o -name "*.h" \) -type f -exec sed -i '' 's/isiOSAppOnVision/isLowPowerModeEnabled/g' {} +
 
-      # 终极微创手术：不删除扩展模块，仅仅切断主程序对它的依赖和复制动作
-      - name: Disconnect ShareExtension (Fix Xcode Cycle)
+      # 核心推演解法：不伤及无辜，只定点清除引发死循环的过时 Thin Binary 脚本阶段
+      - name: Fix Xcode Build Cycle (Remove Obsolete Script)
         run: |
           gem install xcodeproj
           ruby -e "
@@ -38,19 +38,8 @@ jobs:
           project = Xcodeproj::Project.open('ios/Runner.xcodeproj')
           runner = project.targets.find { |t| t.name == 'Runner' }
           if runner
-            # 1. 剪断依赖连线
-            runner.dependencies.delete_if { |dep| dep.target && dep.target.name == 'ShareExtension' }
-            # 2. 剪断打包拷贝连线
-            runner.build_phases.delete_if do |phase|
-              is_ext = false
-              if phase.isa == 'PBXCopyFilesBuildPhase'
-                phase.files.each do |f|
-                  path = f.file_ref&.path || f.file_ref&.name || ''
-                  is_ext = true if path.end_with?('.appex')
-                end
-              end
-              is_ext
-            end
+            # 寻找并彻底删除名字叫 Thin Binary 的过时壳脚本
+            runner.build_phases.delete_if { |phase| phase.isa == 'PBXShellScriptBuildPhase' && phase.name == 'Thin Binary' }
           end
           project.save
           "
