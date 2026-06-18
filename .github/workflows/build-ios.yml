@@ -28,7 +28,7 @@ jobs:
           mkdir -p build/macos/SourcePackages
           flutter pub get
 
-      # 🌟【新增核弹补丁】专门解决 BetterPlayerPlugin 的 Swift/ObjC 混编模块缺失 Bug
+      # 🌟【精准源头补丁】只给需要的插件打入 Swift 模块头文件
       - name: Patch Plugin Source Codes
         run: |
           # 1. 修复 Vision Pro 报错
@@ -37,17 +37,17 @@ jobs:
           # 2. 强制在 better_player_plus 的 ObjC 头文件中注入 Swift 模块翻译器！
           find ~/.pub-cache/hosted/pub.dev/better_player_plus* -name "BetterPlayerPlugin.h" -type f -exec sh -c 'echo "\n#if __has_include(<better_player_plus/better_player_plus-Swift.h>)\n#import <better_player_plus/better_player_plus-Swift.h>\n#endif" >> "$1"' _ {} \;
 
-      # 先让 CocoaPods 正常运行，生成它以为的完整工程
+      # 先让 CocoaPods 正常运行，生成完整工程
       - name: Install iOS Pods
         run: |
           cd ios
           pod install --repo-update
           cd ..
 
-      # 🌟 终极上帝视角手术：在 Xcode 编译前，直接劫持并重写所有工程配置文件！
+      # 🌟 上帝视角手术：去除全局污染，精准修复混编和隐私报错
       - name: Post-Pod Surgery (Nuke Privacy Targets & Fix iOS 14)
         run: |
-          # 1. 暴力清洗：把 CocoaPods 生成的资源复制脚本里，所有关于 privacy 的行全部删掉
+          # 1. 暴力清洗：清理 CocoaPods 的 privacy 复制脚本
           find ios/Pods -name "*.sh" -type f -exec sed -i '' -E '/privacy\.bundle/Id' {} +
           find ios/Pods -name "*.sh" -type f -exec sed -i '' -E '/PrivacyInfo\.xcprivacy/Id' {} +
 
@@ -63,7 +63,7 @@ jobs:
           runner = proj.targets.find { |t| t.name == "Runner" }
           ext = proj.targets.find { |t| t.name == "ShareExtension" }
 
-          # A. 同步扩展包名，避免签名不匹配
+          # A. 同步扩展包名
           if runner && ext
             runner_config = runner.build_configurations.find { |c| c.name == "Release" }
             runner_id = runner_config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] || "com.mystyle.purelive.liu"
@@ -75,13 +75,11 @@ jobs:
             runner.build_phases.delete_if { |phase| phase.isa == "PBXShellScriptBuildPhase" && phase.name == "Thin Binary" }
           end
 
-          # C. 注入 iOS 14.3 全套弱链接免死金牌，以及强行开启模块化！
+          # C. 注入 iOS 14.3 全套弱链接免死金牌（取消了这里的全局 DEFINES_MODULE）
           proj.targets.each do |target|
             target.build_configurations.each do |config|
               config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
               config.build_settings["ENABLE_BITCODE"] = "NO"
-              config.build_settings["DEFINES_MODULE"] = "YES"
-              config.build_settings["CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES"] = "YES"
               
               if target.name == "Runner"
                 ldflags = config.build_settings["OTHER_LDFLAGS"] || ["$(inherited)"]
@@ -99,29 +97,31 @@ jobs:
           # ==========================================
           pods_proj = Xcodeproj::Project.open("ios/Pods/Pods.xcodeproj")
 
-          # A. 精准提级与强行开启混编模块
           pods_proj.targets.each do |t|
             t.build_configurations.each do |c|
-              c.build_settings["DEFINES_MODULE"] = "YES"
-              c.build_settings["CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES"] = "YES"
+              # A. 精准提级
               if t.name.include?("file_picker") || t.name.include?("firebase") || t.name.include?("cloud_firestore")
                 c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "15.0"
               else
                 c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0"
               end
+              
+              # B. 【关键修复】只对引发报错的 better_player_plus 开启混编模块化！不连累其他插件！
+              if t.name.include?("better_player_plus")
+                c.build_settings["DEFINES_MODULE"] = "YES"
+                c.build_settings["CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES"] = "YES"
+              end
             end
           end
 
-          # B. 核心绝杀：查找所有以 privacy 结尾的编译目标，从工程中物理抹除！
+          # C. 核心绝杀：查找所有以 privacy 结尾的编译目标，从工程中物理抹除！
           privacy_targets = pods_proj.targets.select { |t| t.name.downcase.include?("privacy") }
           privacy_targets.each do |pt|
-            # 先切断所有其他插件对它的依赖
             pods_proj.targets.each { |t| t.dependencies.delete_if { |dep| dep.target == pt } }
-            # 再把它从世界抹除
             pt.remove_from_project
           end
 
-          # C. 安全清理：确保没有任何残留的文件引用指向 privacy.bundle
+          # D. 安全清理：确保没有任何残留的文件引用指向 privacy.bundle
           pods_proj.targets.each do |t|
             t.build_phases.each do |phase|
               phase.files.delete_if do |f|
